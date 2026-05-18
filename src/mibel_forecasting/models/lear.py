@@ -1,0 +1,340 @@
+"""LEAR — Lasso Estimated AutoRegressive day-ahead price forecaster.
+
+Port of the LEAR specification of Lago et al. (2021), Section 3.2,
+implemented from scratch (no ``epftoolbox`` import). The reference
+implementation is consulted only for behavioural parity:
+https://github.com/jeslago/epftoolbox.
+
+Model in one paragraph
+----------------------
+LEAR fits **24 independent Lasso regressions**, one per hour of the
+target day D. The feature vector for day D is the same for all 24
+hours (so feature construction is amortised across them):
+
+- **Price lags** — the 24-hour profile of the realised price for days
+  D-1, D-2, D-3 and D-7. → 96 features.
+- **Exogenous variables** — for each exogenous column, the 24-hour
+  profile on D-1, D-7 and **on D itself** (since exogenous DAM inputs
+  are day-ahead forecasts known at gate-closure). → 72 per exogenous.
+- **Day-of-week dummies** — 7 binary columns.
+
+With the default ``exogenous_cols=("es_demand_fc", "es_wind_fc")`` this
+gives 96 + 2·72 + 7 = **247 features**, matching Lago 2021 exactly.
+
+Pre-processing follows the paper:
+
+1. The target prices and the exogenous (non-dummy) features are
+   transformed with the **arcsinh-median** (a.k.a. *Invariant*)
+   transform — robust to negative prices and outliers and stable across
+   recalibrations.
+2. Per-hour ``LassoLarsIC(criterion="aic")`` picks ``alpha``; the final
+   coefficients come from a fresh ``Lasso`` fit at that alpha.
+
+Rolling recalibration is handled by the generic
+:func:`mibel_forecasting.evaluation.recalibration.rolling_forecast`
+loop: every call rebuilds the 24 per-hour models on the most recent
+``calibration_window`` worth of history.
+"""
+
+from __future__ import annotations
+
+import warnings
+from collections.abc import Sequence
+
+import numpy as np
+import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import Lasso, LassoLarsIC
+
+PRICE_LAGS_DAYS: tuple[int, ...] = (1, 2, 3, 7)
+EXOG_LAGGED_DAYS: tuple[int, ...] = (1, 7)
+N_HOURS: int = 24
+N_DOW: int = 7
+
+
+def _arcsinh_median(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply the Invariant (arcsinh-median) scaler column-wise.
+
+    Returns ``(scaled, median, mad)`` so the same transform can be
+    re-applied to test data and inverted at predict time.
+    """
+    median = np.median(x, axis=0)
+    mad = np.median(np.abs(x - median), axis=0)
+    mad = np.where(mad == 0, 1.0, mad)  # avoid div-by-zero on flat columns
+    scaled = np.arcsinh((x - median) / mad)
+    return scaled, median, mad
+
+
+def _arcsinh_median_apply(x: np.ndarray, median: np.ndarray, mad: np.ndarray) -> np.ndarray:
+    return np.arcsinh((x - median) / mad)
+
+
+def _arcsinh_median_invert(y: np.ndarray, median: np.ndarray, mad: np.ndarray) -> np.ndarray:
+    return np.sinh(y) * mad + median
+
+
+def _day_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Calendar-day index (tz-naive, midnight) for grouping."""
+    naive = idx.tz_localize(None) if idx.tz is not None else idx
+    return pd.DatetimeIndex(pd.to_datetime(naive.date), name="day")
+
+
+def _pivot_one(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """Long → wide (one row per day, 24 columns ``h00..h23``).
+
+    ``dropna=False`` is important at predict time, when the target
+    column may be all-NaN — we still want the day's row to appear so
+    the exogenous lookup line up.
+    """
+    work = pd.DataFrame(
+        {
+            "__day": _day_index(df.index),
+            "__hour": df.index.hour,
+            col: df[col].to_numpy(),
+        }
+    )
+    w = work.pivot_table(
+        index="__day", columns="__hour", values=col, aggfunc="first", dropna=False
+    )
+    w.columns = [f"h{int(h):02d}" for h in w.columns]
+    return w
+
+
+def _pivot_hourly(
+    df: pd.DataFrame, target_col: str, exogenous_cols: Sequence[str]
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Reshape a long hourly panel into ``(n_days x 24)`` wide tables.
+
+    Used at fit time. Days with fewer than 24 hours of the target or any
+    exogenous (DST spring-forward, gaps) are dropped to keep the feature
+    matrix rectangular.
+    """
+    price_w = _pivot_one(df, target_col)
+    exog_w = {c: _pivot_one(df, c) for c in exogenous_cols}
+    full = price_w.dropna(how="any").index
+    for w in exog_w.values():
+        full = full.intersection(w.dropna(how="any").index)
+    return price_w.loc[full], {c: w.loc[full] for c, w in exog_w.items()}
+
+
+def _pivot_for_predict(
+    df: pd.DataFrame, target_col: str, exogenous_cols: Sequence[str]
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Same as :func:`_pivot_hourly` but tolerant of NaN targets.
+
+    At prediction time the target column may be entirely NaN (we are
+    about to forecast it); we still want the exogenous wide tables to
+    line up day-by-day so the lookup of D-1/D-7 can succeed.
+    """
+    price_w = _pivot_one(df, target_col)
+    exog_w = {c: _pivot_one(df, c) for c in exogenous_cols}
+    full = price_w.index
+    for w in exog_w.values():
+        full = full.intersection(w.dropna(how="any").index)
+    return price_w.loc[full], {c: w.loc[full] for c, w in exog_w.items()}
+
+
+def _feature_row_for_day(
+    day: pd.Timestamp,
+    price_w: pd.DataFrame,
+    exog_w: dict[str, pd.DataFrame],
+) -> np.ndarray | None:
+    """Build the 247-feature vector for one target day D. ``None`` if any lag is missing."""
+    feats: list[np.ndarray] = []
+    for lag in PRICE_LAGS_DAYS:
+        d = day - pd.Timedelta(days=lag)
+        if d not in price_w.index:
+            return None
+        feats.append(price_w.loc[d].to_numpy(dtype=float))
+    for w in exog_w.values():
+        for lag in EXOG_LAGGED_DAYS:
+            d = day - pd.Timedelta(days=lag)
+            if d not in w.index:
+                return None
+            feats.append(w.loc[d].to_numpy(dtype=float))
+        if day not in w.index:
+            return None
+        feats.append(w.loc[day].to_numpy(dtype=float))
+    dow = np.zeros(N_DOW, dtype=float)
+    dow[day.dayofweek] = 1.0
+    feats.append(dow)
+    return np.concatenate(feats)
+
+
+def _build_xy(
+    price_w: pd.DataFrame,
+    exog_w: dict[str, pd.DataFrame],
+    *,
+    target_days: pd.DatetimeIndex,
+) -> tuple[np.ndarray, np.ndarray, list[pd.Timestamp]]:
+    """Assemble the (X, Y, days) training matrices over the given target days.
+
+    Y has shape ``(n_days, 24)``: each row is the realised 24-hour price
+    profile of that target day.
+    """
+    rows: list[np.ndarray] = []
+    targets: list[np.ndarray] = []
+    used_days: list[pd.Timestamp] = []
+    for day in target_days:
+        if day not in price_w.index:
+            continue
+        feat = _feature_row_for_day(day, price_w, exog_w)
+        if feat is None:
+            continue
+        rows.append(feat)
+        targets.append(price_w.loc[day].to_numpy(dtype=float))
+        used_days.append(day)
+    if not rows:
+        return np.empty((0, 0)), np.empty((0, 24)), []
+    X = np.vstack(rows)
+    Y = np.vstack(targets)
+    return X, Y, used_days
+
+
+class LEAR:
+    """Day-ahead price forecaster following Lago et al. (2021), §3.2.
+
+    Parameters
+    ----------
+    target_col
+        Column to forecast (e.g. ``"price_es"``).
+    exogenous_cols
+        Hourly columns used as exogenous inputs. Default is
+        ``("es_demand_fc", "es_wind_fc")`` which yields exactly 247
+        features and matches the canonical Lago benchmark.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_col: str,
+        exogenous_cols: Sequence[str] = ("es_demand_fc", "es_wind_fc"),
+    ) -> None:
+        # Empty exogenous is allowed: LEAR collapses to a 96-price-lag +
+        # 7-DoW autoregressive Lasso (103 features). Useful as a sanity
+        # control to isolate the marginal contribution of the exogenous
+        # features.
+        self.target_col = target_col
+        self.exogenous_cols = tuple(exogenous_cols)
+        self._lassos: dict[int, Lasso] = {}
+        self._x_median: np.ndarray | None = None
+        self._x_mad: np.ndarray | None = None
+        self._y_median: np.ndarray | None = None
+        self._y_mad: np.ndarray | None = None
+        self._n_features: int | None = None
+        self._n_dummy_features: int = N_DOW
+        self._price_w: pd.DataFrame | None = None
+        self._exog_w: dict[str, pd.DataFrame] | None = None
+
+    @property
+    def n_features(self) -> int:
+        return 96 + len(self.exogenous_cols) * 72 + N_DOW
+
+    def _scale_x(self, X: np.ndarray, *, fit: bool) -> np.ndarray:
+        """Apply arcsinh-median to the non-dummy block; leave dummies untouched."""
+        n_non_dummy = self.n_features - self._n_dummy_features
+        non_dummy = X[:, :n_non_dummy]
+        dummy = X[:, n_non_dummy:]
+        if fit:
+            scaled, median, mad = _arcsinh_median(non_dummy)
+            self._x_median, self._x_mad = median, mad
+        else:
+            assert self._x_median is not None and self._x_mad is not None
+            scaled = _arcsinh_median_apply(non_dummy, self._x_median, self._x_mad)
+        return np.hstack([scaled, dummy])
+
+    def _scale_y(self, Y: np.ndarray, *, fit: bool) -> np.ndarray:
+        if fit:
+            scaled, median, mad = _arcsinh_median(Y)
+            self._y_median, self._y_mad = median, mad
+            return scaled
+        assert self._y_median is not None and self._y_mad is not None
+        return _arcsinh_median_apply(Y, self._y_median, self._y_mad)
+
+    def fit(self, train_df: pd.DataFrame) -> LEAR:
+        if self.target_col not in train_df.columns:
+            raise KeyError(f"target_col {self.target_col!r} missing from train_df")
+        missing = [c for c in self.exogenous_cols if c not in train_df.columns]
+        if missing:
+            raise KeyError(f"exogenous_cols missing from train_df: {missing}")
+
+        price_w, exog_w = _pivot_hourly(train_df, self.target_col, self.exogenous_cols)
+        self._price_w, self._exog_w = price_w, exog_w
+
+        X, Y, _days = _build_xy(price_w, exog_w, target_days=price_w.index)
+        if X.shape[0] == 0:
+            raise ValueError("Not enough history to build any LEAR training row")
+        self._n_features = X.shape[1]
+        if self._n_features != self.n_features:
+            raise AssertionError(
+                f"Feature-vector size mismatch: built {self._n_features}, expected {self.n_features}"
+            )
+
+        Xs = self._scale_x(X, fit=True)
+        Ys = self._scale_y(Y, fit=True)
+
+        n_samples, n_feat = Xs.shape
+        # LassoLarsIC's AIC criterion needs an estimate of the noise variance,
+        # which it derives from OLS residuals only when n_samples > n_features.
+        # On short calibration windows we fall back to a unit-variance prior
+        # (justifiable because Y has been arcsinh-median scaled, so its scale
+        # is O(1) by construction).
+        noise_variance_kw = {} if n_samples > n_feat else {"noise_variance": 1.0}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            for h in range(N_HOURS):
+                y_h = Ys[:, h]
+                lars = LassoLarsIC(
+                    criterion="aic", max_iter=2500, **noise_variance_kw
+                ).fit(Xs, y_h)
+                alpha = max(lars.alpha_, 1e-8)
+                lasso = Lasso(alpha=alpha, max_iter=2500).fit(Xs, y_h)
+                self._lassos[h] = lasso
+        return self
+
+    def predict(self, test_df: pd.DataFrame) -> pd.Series:
+        """Predict the 24-hour price profile for each day in ``test_df``.
+
+        Day D lags (D-1, D-2, D-3, D-7) are looked up from training
+        history; exogenous features for D itself are read from
+        ``test_df`` (day-ahead forecasts known at gate-closure). The
+        target column may be NaN in ``test_df``.
+
+        Multi-day test windows are supported only if every day's lags
+        fall in training history — i.e. no day-N prediction is fed into
+        the lags of day N+1. This matches Lago's
+        ``recalibrate_and_forecast_next_day`` convention. The generic
+        ``rolling_forecast`` loop respects this by recalibrating each
+        day with a fresh ``LEAR`` instance.
+        """
+        if not self._lassos:
+            raise RuntimeError("call fit() before predict()")
+        assert self._price_w is not None and self._exog_w is not None
+
+        test_price_w, test_exog_w = _pivot_for_predict(
+            test_df, self.target_col, self.exogenous_cols
+        )
+
+        # Merge training (wide) with test (wide). Test rows win on overlap.
+        full_price_w = pd.concat([self._price_w, test_price_w])
+        full_price_w = full_price_w[~full_price_w.index.duplicated(keep="last")].sort_index()
+        full_exog_w: dict[str, pd.DataFrame] = {}
+        for col in self.exogenous_cols:
+            merged = pd.concat([self._exog_w[col], test_exog_w[col]])
+            full_exog_w[col] = merged[~merged.index.duplicated(keep="last")].sort_index()
+
+        out = pd.Series(index=test_df.index, dtype=float, name="y_pred")
+        days_to_predict = pd.DatetimeIndex(pd.unique(_day_index(test_df.index)))
+        for day in days_to_predict:
+            feat = _feature_row_for_day(day, full_price_w, full_exog_w)
+            if feat is None:
+                continue
+            Xs = self._scale_x(feat.reshape(1, -1), fit=False)
+            preds_scaled = np.array(
+                [self._lassos[h].predict(Xs)[0] for h in range(N_HOURS)]
+            )
+            preds = _arcsinh_median_invert(preds_scaled, self._y_median, self._y_mad)
+            day_mask = _day_index(test_df.index) == day
+            for ts in test_df.index[day_mask]:
+                out.loc[ts] = float(preds[ts.hour])
+        return out
