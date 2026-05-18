@@ -2,7 +2,7 @@
 
 For day-ahead electricity prices, Lago et al. (2021) recommend a weekly
 seasonal naive baseline: the forecast for hour *h* of day *d* is the
-realised price at hour *h* of day *d − 7*. This captures both the daily
+realised price at hour *h* of day *d - 7*. This captures both the daily
 profile and the day-of-week effect (weekday/weekend) without any
 parameters, and it is the first line of defence against more elaborate
 models that do not actually beat trivial seasonality.
@@ -31,7 +31,7 @@ class SeasonalNaive:
         self.lag_days = lag_days
         self._history: pd.Series | None = None
 
-    def fit(self, train_df: pd.DataFrame) -> "SeasonalNaive":
+    def fit(self, train_df: pd.DataFrame) -> SeasonalNaive:
         if self.target_col not in train_df.columns:
             raise KeyError(f"target_col {self.target_col!r} missing from train_df")
         self._history = train_df[self.target_col].copy()

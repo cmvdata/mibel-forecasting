@@ -73,7 +73,7 @@ def test_pull_indicator_fetches_and_caches_on_miss(tmp_path, monkeypatch):
         return pd.Series(range(24), index=idx, dtype=float, name="value")
 
     monkeypatch.setattr(esios, "_fetch_month", _fake_fetch)
-    out = pull_indicator(
+    pull_indicator(
         600, 3,
         start="2024-06-01T00:00:00Z",
         end="2024-06-01T23:59:59Z",

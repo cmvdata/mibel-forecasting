@@ -145,10 +145,7 @@ def pull_indicator(
         ts = pd.Timestamp(x)
         if is_date_only and kind == "end":
             ts = ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        else:
-            ts = ts.tz_convert("UTC")
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
         return ts
 
     start_ts = _to_utc(start, kind="start")

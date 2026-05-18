@@ -14,7 +14,7 @@ rmae
     Relative MAE versus a naive benchmark. ``< 1`` means the model beats
     the naive; ``> 1`` means it is worse.
 by_hour
-    Apply any of the above hour-by-hour (0–23) and return a Series indexed
+    Apply any of the above hour-by-hour (0-23) and return a Series indexed
     by hour of day. Useful for diagnosing where a model wins or loses.
 """
 

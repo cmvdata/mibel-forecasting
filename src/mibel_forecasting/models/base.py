@@ -23,7 +23,7 @@ class Model(Protocol):
     returns a forecast series aligned to ``test_df.index``.
     """
 
-    def fit(self, train_df: pd.DataFrame) -> "Model":  # pragma: no cover - protocol
+    def fit(self, train_df: pd.DataFrame) -> Model:  # pragma: no cover - protocol
         ...
 
     def predict(self, test_df: pd.DataFrame) -> pd.Series:  # pragma: no cover - protocol
