@@ -49,6 +49,10 @@ reports/figures/*.svg
 # Regenerable diagnostic data (the markdown summary stays in git)
 reports/diagnostics/*.parquet
 reports/diagnostics/*.csv
+# Canonical robustness numbers — committed so external reviewers can
+# reload the table without re-running notebook 03 (~70 min compute).
+!reports/diagnostics/lear_robustness_2026_05.csv
+!reports/diagnostics/lear_robustness_dropped_days_2026_05.csv
 
 # OS
 .DS_Store
@@ -65,4 +69,5 @@ desktop.ini
 
 # Local audit/dump tooling (not part of the product)
 scripts/_dump_code_bundle.py
+scripts/_build_nb03.py
 code_bundle.txt

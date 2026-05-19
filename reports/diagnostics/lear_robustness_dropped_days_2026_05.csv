@@ -1,0 +1,17 @@
+regime,model,days in panel,full days predicted,partial-hour days in panel,skipped (lag missing or NaN)
+"2022 (H2, crisis)",naive,184,162,22,0
+"2022 (H2, crisis)",LEAR ar-only,184,147,0,37
+"2022 (H2, crisis)",LEAR demand+wind,184,147,0,37
+"2022 (H2, crisis)",LEAR demand+solar+wind,184,147,0,37
+2023 (full year),naive,365,345,20,0
+2023 (full year),LEAR ar-only,365,333,0,32
+2023 (full year),LEAR demand+wind,365,333,0,32
+2023 (full year),LEAR demand+solar+wind,365,333,0,32
+2024 (full year),naive,362,341,18,3
+2024 (full year),LEAR ar-only,362,335,0,27
+2024 (full year),LEAR demand+wind,362,335,0,27
+2024 (full year),LEAR demand+solar+wind,362,335,0,27
+2023-2024 pooled,naive,727,686,38,3
+2023-2024 pooled,LEAR ar-only,727,668,0,59
+2023-2024 pooled,LEAR demand+wind,727,668,0,59
+2023-2024 pooled,LEAR demand+solar+wind,727,668,0,59
