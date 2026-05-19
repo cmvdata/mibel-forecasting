@@ -79,12 +79,22 @@ def _day_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(pd.to_datetime(naive.date), name="day")
 
 
+_HOUR_COLS: list[str] = [f"h{h:02d}" for h in range(N_HOURS)]
+
+
 def _pivot_one(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """Long → wide (one row per day, 24 columns ``h00..h23``).
 
     ``dropna=False`` is important at predict time, when the target
     column may be all-NaN — we still want the day's row to appear so
-    the exogenous lookup line up.
+    the exogenous lookup lines up.
+
+    The returned frame is reindexed to the canonical 24-column schema
+    ``h00..h23`` so that days missing some hours (e.g. a test slice
+    cut to 22 of 24 hours after ``.dropna()`` over unsafe v8 columns)
+    surface those gaps as explicit NaN rather than as silently
+    truncated column lists. The downstream ``dropna(how='any')`` filter
+    then correctly excludes partial days.
     """
     work = pd.DataFrame(
         {
@@ -97,7 +107,7 @@ def _pivot_one(df: pd.DataFrame, col: str) -> pd.DataFrame:
         index="__day", columns="__hour", values=col, aggfunc="first", dropna=False
     )
     w.columns = [f"h{int(h):02d}" for h in w.columns]
-    return w
+    return w.reindex(columns=_HOUR_COLS)
 
 
 def _pivot_hourly(

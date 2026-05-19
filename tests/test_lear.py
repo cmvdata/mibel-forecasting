@@ -158,6 +158,36 @@ def test_lear_predict_does_not_use_test_target():
     pd.testing.assert_series_equal(pred_nan, pred_poisoned, check_names=False)
 
 
+def test_lear_predict_handles_partial_hour_test_day():
+    """Real DAM panels have hourly-grid gaps (e.g. some unsafe v8 columns
+    are NaN at scattered hours and ``.dropna()`` drops the row). A test
+    day with fewer than 24 hours in the panel must NOT make ``predict``
+    crash inside Lasso with 'Input X contains NaN'.
+
+    Reproduces the exact failure mode that broke notebook 03 on the
+    first real partial day in 2022 H2 (2022-09-23 has 22/24 hours):
+    ``_pivot_one(test_df, col)`` returned a 22-column DataFrame, which
+    after concat with the 24-column training pivot left two
+    silently-NaN hour columns that fed straight into Lasso.
+
+    Expected behaviour: predict returns cleanly. The partial day's
+    predictions are NaN (insufficient information to forecast it);
+    no exception is raised.
+    """
+    df = _synthetic_panel(days=400)
+    train = df.iloc[:-24]
+    test = df.iloc[-24:].copy()  # single day = the canonical rolling-forecast slice
+    test["price_es"] = np.nan
+    # Drop two hours so the day is partial (22 of 24).
+    test = test.drop([test.index[3], test.index[5]])
+    assert len(test) == 22
+
+    m = LEAR(target_col="price_es").fit(train)
+    pred = m.predict(test)  # MUST NOT raise
+    assert len(pred) == 22
+    assert pred.isna().all(), "partial day cannot be predicted; should stay NaN cleanly"
+
+
 def test_lear_multiday_window_no_leakage_from_within_test():
     """Day N+1's prediction must be insensitive to day N's realised target."""
     df = _synthetic_panel(days=400)
