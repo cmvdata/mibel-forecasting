@@ -233,10 +233,20 @@ The Series and Signal components do not show up in Demir's top-three
 for any model.
 
 **Proposed value for our LEAR:** `(s_1 = 2, s_2 = 26, s = 9)` for the
-Histogram. We will compute all three components (Series, Signal,
-Histogram) at the same parameters and let the Lasso decide whether
-to keep them; expecting Series and Signal to be largely zeroed out,
-consistent with Demir's empirical preference for the Histogram.
+Histogram. **Confidence: high** — Demir's grid-search retained the
+MACD Histogram with these exact parameters as the **third-best TI
+for LR** (Linear Regression, Table 1, row "Third-Best TI", column
+"LR", footnote `** = (s_1=2, s_2=26, s=9)`, p. 11), the same model
+family our LEAR (per-hour Lasso) descends from. The 2NN model
+independently retained the Histogram as its third-best TI at
+different parameters (`s_1 = 58, s_2 = 116, s = 9`, footnote `***`),
+reinforcing that the Histogram is the empirically preferred MACD
+branch across model families.
+
+We will compute all three components (Series, Signal, Histogram) at
+the same parameters and let the Lasso decide whether to keep them;
+expecting Series and Signal to be largely zeroed out, consistent
+with Demir's empirical preference for the Histogram.
 
 **Note on the "standard 12/26/9" finance default.** The paper
 deliberately does *not* lock in those numbers — they appear only as a
@@ -355,21 +365,30 @@ copp = (roc1 + roc2).ewm(span=s, adjust=True).mean()
 
 | model | rank | parameters |
 |---|---|---|
-| ResNet (deep) | second | `n_1 = 18, n_2 = 24, s = 18` |
-| ResNet (deep) | third | `n_1 = 58, n_2 = 74, s = 54` |
+| ResNet (deep) | second-best | `n_1 = 18, n_2 = 24, s = 18` (footnote `*`) |
+| 2CNN_NN (deep) | third-best | `n_1 = 58, n_2 = 74, s = 54` (footnote `****`) |
 
-**Open decision: not retained by any linear model and not even a
-"best TI" for any model.** Demir's Coppock evidence is the weakest of
-the six indicators in the user's list. Two defensible choices:
+**Open decision: Coppock is the only indicator on the six-indicator
+list with no linear-model evidence at any parameter setting.** Demir
+retained Coppock only by two deep models, and the two retained
+parameter sets differ from each other — this is the weakest
+indicator–parameter pairing in the audit. Two defensible choices:
 
-1. **Use `n_1 = 18, n_2 = 24, s = 18`** (Demir's best of two Coppock
-   appearances).
+1. **Adopt Demir's ResNet second-best parameters
+   `(n_1 = 18, n_2 = 24, s = 18)`.** These are the highest-ranked
+   Coppock appearance in Table 1 (second-best, above 2CNN_NN's
+   third-best). The 2CNN_NN parameters `(n_1 = 58, n_2 = 74, s = 54)`
+   are **not adopted**: they belong to a deeper CNN-based
+   architecture whose capacity to absorb noisy long-horizon ROC
+   components has no parallel in a linear Lasso, and adopting them
+   would mix two unrelated grid-search optima.
 2. **Grid-search on MIBEL.**
 
-Phase-2 default: **`n_1 = 18, n_2 = 24, s = 18`** (option 1). We
+Phase-2 default: **`(n_1 = 18, n_2 = 24, s = 18)`** (option 1). We
 explicitly expect Coppock to be the **most likely zero-coefficient
 indicator** in the Lasso ablation — that itself is a finding worth
-reporting, since Demir already flagged Coppock as marginal.
+reporting, since Demir's Coppock evidence is already the marginal
+case in the paper.
 
 ## Leakage-safe computation rule (uniform across all six indicators)
 
@@ -400,10 +419,10 @@ six indicators.
 |---|---|---|---|---|
 | EMA | `s` | **2** | LR/HR best | high (linear consensus) |
 | Bollinger %B | `n` | **58** | LR best, HR second | high (linear consensus) |
-| MACD Series, Signal, Histogram | `(s_1, s_2, s)` | **(2, 26, 9)** | LR third-best (Histogram) | medium |
+| MACD Series, Signal, Histogram | `(s_1, s_2, s)` | **(2, 26, 9)** | LR third-best (Histogram, footnote `**` in Table 1) | high (linear-model evidence) |
 | MOM | `n` | **58** | AB / GB best, RF second | medium (no linear evidence) |
 | ROC | `n` | **49** | CNN / 2CNN best, AB second | medium (no linear evidence) |
-| Coppock | `(n_1, n_2, s)` | **(18, 24, 18)** | ResNet second-best | low (no linear evidence) |
+| Coppock | `(n_1, n_2, s)` | **(18, 24, 18)** | ResNet second-best (footnote `*` in Table 1); 2CNN_NN third-best has different params `(58, 74, 54)` — not adopted | low (no linear evidence at any params) |
 
 "Confidence" reflects how directly Demir's evidence supports the
 parameter choice for a linear (Lasso) model on Belgian DAM. The
