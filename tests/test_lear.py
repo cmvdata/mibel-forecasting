@@ -188,6 +188,31 @@ def test_lear_predict_handles_partial_hour_test_day():
     assert pred.isna().all(), "partial day cannot be predicted; should stay NaN cleanly"
 
 
+def test_lear_partial_day_skipped_uniformly_across_variants():
+    """The partial-day filter must be uniform across LEAR configurations.
+
+    Without the uniform filter, AR-only (no exogenous columns) silently
+    predicts the available hours of a partial day while LEAR with
+    exogenous columns skips it entirely — producing a biased rMAE when
+    those configurations are compared on the same regime window. Both
+    variants must skip identically.
+    """
+    df = _synthetic_panel(days=400)
+    train = df.iloc[:-24]
+    test = df.iloc[-24:].copy()
+    test["price_es"] = np.nan
+    test = test.drop([test.index[3], test.index[5]])
+    assert len(test) == 22
+
+    for exog in [(), ("es_demand_fc", "es_wind_fc")]:
+        m = LEAR(target_col="price_es", exogenous_cols=exog).fit(train)
+        pred = m.predict(test)
+        assert pred.isna().all(), (
+            f"variant exog={exog} predicted a partial day; should have skipped "
+            f"({pred.notna().sum()}/{len(pred)} hours non-NaN)"
+        )
+
+
 def test_lear_multiday_window_no_leakage_from_within_test():
     """Day N+1's prediction must be insensitive to day N's realised target."""
     df = _synthetic_panel(days=400)

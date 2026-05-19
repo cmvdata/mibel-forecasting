@@ -328,34 +328,56 @@ class LEAR:
           test window's earlier days (e.g. a multi-day forecast where
           the model is allowed to look at recently-predicted prices),
           do that explicitly outside this method.
+
+        **Incomplete test days are skipped uniformly across LEAR
+        configurations.** A day with fewer than 24 hours in ``test_df``
+        (e.g. after a strict ``.dropna()`` over unsafe v8 columns) is
+        not predicted — its rows stay NaN in the output Series. This
+        rule applies whether or not the model has exogenous columns,
+        so the rMAE of ``ar-only`` and ``demand+wind`` is averaged over
+        the same set of days in any robustness comparison. The list of
+        skipped days is exposed for diagnostics via the return value
+        (NaN positions) rather than via a separate API.
         """
         if not self._lassos:
             raise RuntimeError("call fit() before predict()")
         assert self._price_w is not None and self._exog_w is not None
 
+        # Partial-day filter (uniform across all configurations).
+        # A test day is "full" iff test_df carries all 24 hours of it.
+        day_idx = _day_index(test_df.index)
+        hours_per_day = pd.Series(day_idx).value_counts()
+        full_test_days = pd.DatetimeIndex(
+            sorted(d for d, n in hours_per_day.items() if n == N_HOURS),
+            name="day",
+        )
+
         # Only the exogenous columns are read from test_df; the target
         # column is intentionally ignored.
         test_exog_w = {c: _pivot_one(test_df, c) for c in self.exogenous_cols}
-        full_days = None
-        for w in test_exog_w.values():
-            clean = w.dropna(how="any").index
-            full_days = clean if full_days is None else full_days.intersection(clean)
-        if full_days is not None:
-            test_exog_w = {c: w.loc[full_days] for c, w in test_exog_w.items()}
+        if test_exog_w:
+            # Defence-in-depth: even on a full-hour day, drop it if any
+            # exogenous cell came in as NaN (should not happen post-dropna
+            # but the cost of the check is negligible).
+            clean_exog_days = full_test_days
+            for w in test_exog_w.values():
+                clean_exog_days = clean_exog_days.intersection(
+                    w.dropna(how="any").index
+                )
+            test_exog_w = {c: w.loc[clean_exog_days] for c, w in test_exog_w.items()}
+            full_test_days = clean_exog_days
 
         # Price lookup uses training history only — never test_df.
         full_price_w = self._price_w
-        # Exogenous lookup unions train history and the test window.
-        # Test wins on overlap (relevant only for callers passing
-        # overlapping ranges; rolling_forecast never does that).
+        # Exogenous lookup unions train history and the (full-day-filtered)
+        # test window. Test wins on overlap.
         full_exog_w: dict[str, pd.DataFrame] = {}
         for col in self.exogenous_cols:
             merged = pd.concat([self._exog_w[col], test_exog_w[col]])
             full_exog_w[col] = merged[~merged.index.duplicated(keep="last")].sort_index()
 
         out = pd.Series(index=test_df.index, dtype=float, name="y_pred")
-        days_to_predict = pd.DatetimeIndex(pd.unique(_day_index(test_df.index)))
-        for day in days_to_predict:
+        for day in full_test_days:
             feat = _feature_row_for_day(day, full_price_w, full_exog_w)
             if feat is None:
                 continue
