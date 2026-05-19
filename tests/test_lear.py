@@ -141,3 +141,39 @@ def test_lear_missing_exogenous_col_raises():
     df = _synthetic_panel(days=400)
     with pytest.raises(KeyError):
         LEAR(target_col="price_es", exogenous_cols=("no_such_col",)).fit(df)
+
+
+def test_lear_predict_does_not_use_test_target():
+    """Changing the realised target in test_df must not change predictions."""
+    df = _synthetic_panel(days=400)
+    train = df.iloc[:-24]
+    test_nan = df.iloc[-24:].copy()
+    test_nan["price_es"] = np.nan
+    test_poisoned = df.iloc[-24:].copy()
+    test_poisoned["price_es"] = 9999.0
+
+    m = LEAR(target_col="price_es").fit(train)
+    pred_nan = m.predict(test_nan)
+    pred_poisoned = m.predict(test_poisoned)
+    pd.testing.assert_series_equal(pred_nan, pred_poisoned, check_names=False)
+
+
+def test_lear_multiday_window_no_leakage_from_within_test():
+    """Day N+1's prediction must be insensitive to day N's realised target."""
+    df = _synthetic_panel(days=400)
+    train = df.iloc[:-3 * 24]
+    test_baseline = df.iloc[-3 * 24:].copy()
+    test_baseline["price_es"] = np.nan
+
+    test_poisoned = df.iloc[-3 * 24:].copy()
+    test_poisoned["price_es"] = np.nan
+    # Inject a wildly wrong realised target into the FIRST day of the
+    # test window. If LEAR were leaking it via the lag block, the
+    # predictions for day 2 / day 3 would shift.
+    first_day_mask = test_poisoned.index.date == test_poisoned.index[0].date()
+    test_poisoned.loc[first_day_mask, "price_es"] = 9999.0
+
+    m = LEAR(target_col="price_es").fit(train)
+    pred_baseline = m.predict(test_baseline)
+    pred_poisoned = m.predict(test_poisoned)
+    pd.testing.assert_series_equal(pred_baseline, pred_poisoned, check_names=False)

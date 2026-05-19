@@ -61,9 +61,15 @@ def rolling_forecast(
     ):
         train = df.loc[train_idx]
         test = df.loc[test_idx]
+        # Mask the realised target before showing the test window to the
+        # model — guarantees that no implementation can read it as a
+        # feature, no matter the test horizon. The realised values are
+        # kept in `y_true` for evaluation.
+        test_for_pred = test.copy()
+        test_for_pred[target_col] = pd.NA
         model = model_factory()
         model.fit(train)
-        y_pred = model.predict(test)
+        y_pred = model.predict(test_for_pred)
         chunks.append(
             pd.DataFrame(
                 {"y_true": test[target_col].to_numpy(), "y_pred": y_pred.to_numpy()},

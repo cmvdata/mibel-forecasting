@@ -58,3 +58,38 @@ def test_rolling_forecast_columns_and_index():
     assert list(out.columns) == ["y_true", "y_pred"]
     assert isinstance(out.index, pd.DatetimeIndex)
     assert out.index.tz is not None
+
+
+def test_rolling_forecast_masks_target_before_predict():
+    """The realised target must never reach the model's predict() input."""
+
+    seen_targets: list[bool] = []
+
+    class _SnoopingModel:
+        """Records whether any non-NA price_es reached predict()."""
+
+        target_col = "price_es"
+
+        def fit(self, train_df):
+            return self
+
+        def predict(self, test_df):
+            seen_targets.append(test_df[self.target_col].notna().any())
+            return pd.Series(0.0, index=test_df.index, name="y_pred")
+
+    df = _periodic_panel(days=21)
+    out = rolling_forecast(
+        df,
+        target_col="price_es",
+        model_factory=_SnoopingModel,
+        train_size="10D",
+        test_start="2024-01-15",
+        test_end="2024-01-17",
+    )
+    assert len(seen_targets) >= 1, "rolling_forecast did not invoke predict()"
+    assert not any(seen_targets), (
+        "rolling_forecast leaked the realised target into predict(): "
+        f"saw non-NA target in {sum(seen_targets)}/{len(seen_targets)} windows"
+    )
+    # y_true should still carry the realised values for the metrics layer.
+    assert out["y_true"].notna().all()

@@ -295,29 +295,49 @@ class LEAR:
     def predict(self, test_df: pd.DataFrame) -> pd.Series:
         """Predict the 24-hour price profile for each day in ``test_df``.
 
-        Day D lags (D-1, D-2, D-3, D-7) are looked up from training
-        history; exogenous features for D itself are read from
-        ``test_df`` (day-ahead forecasts known at gate-closure). The
-        target column may be NaN in ``test_df``.
+        **Price-lag features come exclusively from the training history**
+        captured at ``fit`` time — the target column of ``test_df`` is
+        never read, so leakage from realised prices inside the test
+        window is impossible regardless of the test horizon.
 
-        Multi-day test windows are supported only if every day's lags
-        fall in training history — i.e. no day-N prediction is fed into
-        the lags of day N+1. This matches Lago's
-        ``recalibrate_and_forecast_next_day`` convention. The generic
-        ``rolling_forecast`` loop respects this by recalibrating each
-        day with a fresh ``LEAR`` instance.
+        Exogenous features for day D itself are read from ``test_df``
+        (day-ahead forecasts known at gate-closure); their D-1 and D-7
+        lags fall in the union of training and test history, with the
+        latter taking precedence on overlap.
+
+        Implications:
+
+        - The realised target of the test window has zero effect on the
+          predictions; passing it as ``NaN`` (the convention used by the
+          rolling-forecast loop) is functionally identical to passing
+          the true values.
+        - Multi-day test horizons are leakage-free for the same reason —
+          day N+1 cannot see day N's realised price because price lags
+          only look at training history.
+        - If, for some application, you need price lags that include the
+          test window's earlier days (e.g. a multi-day forecast where
+          the model is allowed to look at recently-predicted prices),
+          do that explicitly outside this method.
         """
         if not self._lassos:
             raise RuntimeError("call fit() before predict()")
         assert self._price_w is not None and self._exog_w is not None
 
-        test_price_w, test_exog_w = _pivot_for_predict(
-            test_df, self.target_col, self.exogenous_cols
-        )
+        # Only the exogenous columns are read from test_df; the target
+        # column is intentionally ignored.
+        test_exog_w = {c: _pivot_one(test_df, c) for c in self.exogenous_cols}
+        full_days = None
+        for w in test_exog_w.values():
+            clean = w.dropna(how="any").index
+            full_days = clean if full_days is None else full_days.intersection(clean)
+        if full_days is not None:
+            test_exog_w = {c: w.loc[full_days] for c, w in test_exog_w.items()}
 
-        # Merge training (wide) with test (wide). Test rows win on overlap.
-        full_price_w = pd.concat([self._price_w, test_price_w])
-        full_price_w = full_price_w[~full_price_w.index.duplicated(keep="last")].sort_index()
+        # Price lookup uses training history only — never test_df.
+        full_price_w = self._price_w
+        # Exogenous lookup unions train history and the test window.
+        # Test wins on overlap (relevant only for callers passing
+        # overlapping ranges; rolling_forecast never does that).
         full_exog_w: dict[str, pd.DataFrame] = {}
         for col in self.exogenous_cols:
             merged = pd.concat([self._exog_w[col], test_exog_w[col]])
