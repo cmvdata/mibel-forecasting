@@ -138,26 +138,65 @@ Shipped:
   `rolling_forecast` masks the target column to NA before calling
   `predict`. Regression-tested with a multi-day-window poisoning test
   in `tests/test_lear.py`.
+- **LEAR robustness across regimes** — `notebooks/03_lear_robustness.ipynb`
+  runs daily-recalibrated backtests on three regimes (2022 H2 with
+  train_size=180D, 2023 and 2024 full years with train_size=365D),
+  plus a derived pooled 2023-2024 view. Architecture: one pure
+  `run_regime(spec)` function in
+  `src/mibel_forecasting/evaluation/_robustness.py`, dispatched
+  through `concurrent.futures.ProcessPoolExecutor` with three workers
+  (one per regime). A smoke test reproduces notebook 02's canonical
+  `naive MAE = 40.568` and `LEAR demand+wind rMAE = 0.394` through
+  the same entry point before committing to the heavy run. Outputs:
+  - `reports/diagnostics/lear_robustness_2026_05.csv` — metrics per
+    (regime, model): MAE, sMAPE, rMAE, DM stat / p-value / NW lag;
+  - `reports/diagnostics/lear_robustness_dropped_days_2026_05.csv` —
+    coverage diagnostic (full days predicted / partial-hour days /
+    skipped days) confirming the uniform partial-day skipping rule
+    across LEAR variants;
+  - `reports/diagnostics/lear_robustness_2026_05.md` — auto-generated
+    narrative report.
+- **Hardened LEAR for incomplete panels.** Three model-layer fixes
+  triggered by real DAM data with hourly gaps and tight rolling
+  windows: `_pivot_one` reindexes to the canonical 24-column schema
+  so partial days surface as explicit NaN; `LEAR.predict` skips
+  partial test days uniformly across configurations; and the
+  `LassoLarsIC` noise-variance fallback now triggers with `N_HOURS`
+  rows of safety margin against the sklearn `n_samples > n_features`
+  requirement. Regression-tested in `tests/test_lear.py`.
+- **Temporal-integrity and determinism tests** for the rolling
+  evaluator — `tests/test_temporal_integrity.py` covers 24-hour
+  daily output, no duplicated timestamps, no hourly gaps, DST
+  transitions, and bit-identical results across two independent runs
+  of both naive and LEAR.
 
 ### Known limitations
 
-1. **rMAE outside the Lago 2021 reference range.** Under the canonical
-   UTC convention, LEAR DAM-ES 2024 lands at rMAE ≈ 0.39
-   (`reports/diagnostics/utc_migration_2026_05.md`), well below the
-   `[0.80, 0.95]` band that Lago et al. (2021) report on EPEX-BE/FR/DE,
-   NordPool and PJM. The cause is structural: heavy solar penetration in
-   MIBEL 2024 collapses mid-day prices to zero in a way the week-old
-   seasonal naive cannot anticipate, inflating the denominator of the
-   rMAE ratio. This is documented honestly in notebook 02 and is *not*
-   a code or leakage issue.
-2. **Notebook axis labels still assume Europe/Madrid** while the internal
-   panel is now UTC. This is purely cosmetic for plots, but a reader of
-   notebook 02 will see *"Hour of day (Europe/Madrid)"* on a UTC-indexed
-   series. Slated for cleanup in P4.
-3. **No formal robustness analysis yet.** A single test window
-   (first two weeks of June 2024) is reported. Cross-window stability,
-   bootstrap CIs over rMAE, and a regime-conditioned (high-solar vs
-   low-solar day) breakdown are P6 work.
+1. **rMAE on MIBEL 2023-2024 falls well below the Lago 2021 reference
+   range.** The robustness notebook (`notebooks/03_lear_robustness.ipynb`)
+   reports `LEAR demand+wind rMAE ≈ 0.51` on the full year 2024 and
+   `≈ 0.45` on the full year 2023 (`reports/diagnostics/lear_robustness_2026_05.csv`),
+   versus the Lago `[0.80, 0.95]` band on EPEX-BE/FR/DE, NordPool and
+   PJM. The earlier figure of `0.39` from notebook 02 reflects an
+   unusually easy June 2024 fortnight, not the whole regime. The
+   cause is structural: heavy solar penetration in MIBEL collapses
+   mid-day prices to zero in a way the week-old seasonal naive
+   cannot anticipate, inflating the denominator of the rMAE ratio.
+   This is *not* a code or leakage issue.
+2. **LEAR ar-only barely beats the naive in the 2022 H2 crisis
+   regime** (`rMAE = 0.6206`, flagged by the honest-reporting clause
+   in the robustness report). LEAR demand+wind / demand+solar+wind
+   beat it more comfortably (`≈ 0.57`) on the same window. Read as a
+   robustness diagnostic, not a definitive ranking, since 2022 H2
+   carries both the energy-crisis regime and the 'Iberian exception'
+   gas-cap rule simultaneously.
+3. **2022 backtests use `train_size=180D`, not the canonical 365D**,
+   because no pre-2022 ESIOS price history is cached in this repo.
+   Disclosed in notebook 03 §3.
+4. **Notebook axis labels still assume Europe/Madrid** while the
+   internal panel is now UTC. This is purely cosmetic for plots, but
+   a reader of notebooks 01 / 02 / 03 will see
+   *"Hour of day (Europe/Madrid)"* on a UTC-indexed series.
 
 ### How to reproduce
 
@@ -169,9 +208,15 @@ uv sync --extra dev --extra notebooks
 #    unless ESIOS_API_TOKEN is exported in .env)
 uv run pytest
 
-# 3. Execute the two shipped notebooks end-to-end
+# 3. Execute the three shipped notebooks end-to-end. Notebook 03 is
+#    heavy (~60-70 minutes of compute on a single laptop, parallel
+#    across three regimes via ProcessPoolExecutor); the smoke-test
+#    cell aborts early if the run_regime entry point ever diverges
+#    from notebook 02 by more than 3% relative on `naive MAE` and
+#    `LEAR demand+wind rMAE`.
 uv run jupyter nbconvert --to notebook --execute notebooks/01_dam_baselines.ipynb
 uv run jupyter nbconvert --to notebook --execute notebooks/02_lear.ipynb
+uv run jupyter nbconvert --to notebook --execute notebooks/03_lear_robustness.ipynb
 ```
 
 The ESIOS API token is read from `.env` (`ESIOS_API_TOKEN=...`).
