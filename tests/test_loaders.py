@@ -53,9 +53,20 @@ def test_load_dam_basic_without_v8(monkeypatch):
         v8_exogenous=None,
     )
     assert isinstance(df.index, pd.DatetimeIndex)
-    assert str(df.index.tz) == "Europe/Madrid"
+    # Internal pipeline tz is UTC by default.
+    assert str(df.index.tz) == "UTC"
     assert list(df.columns) == ["price_es", "price_pt", "price_fr"]
     assert df["price_es"].notna().all()
+
+
+def test_load_dam_madrid_timezone_opt_in(monkeypatch):
+    _patch_esios(monkeypatch)
+    df = load_dam_panel(
+        start="2024-06-01", end="2024-06-03",
+        v8_exogenous=None,
+        timezone="Europe/Madrid",
+    )
+    assert str(df.index.tz) == "Europe/Madrid"
 
 
 def test_load_dam_target_col_relabels(monkeypatch):
@@ -181,10 +192,33 @@ def test_load_dam_real_pull_matches_esios_fresh():
         start="2024-06-01", end="2024-06-07",
         v8_exogenous=None,
     )
-    panel_es_utc = panel["price_es"].copy()
-    panel_es_utc.index = panel_es_utc.index.tz_convert("UTC")
-    merged = pd.concat([panel_es_utc.rename("panel"), fresh_es.rename("fresh")], axis=1).dropna()
-    # MAD-vs-UTC clipping leaves the intersection ~2h short of a full week.
-    assert len(merged) >= 160
+    # Panel default tz is UTC; no conversion needed.
+    assert str(panel.index.tz) == "UTC"
+    panel_es = panel["price_es"].rename("panel")
+    merged = pd.concat([panel_es, fresh_es.rename("fresh")], axis=1).dropna()
+    # Full week, full intersection — no Madrid/UTC clipping anymore.
+    assert len(merged) == 7 * 24, f"expected 168 hours, got {len(merged)}"
     diff = (merged["panel"] - merged["fresh"]).abs()
     assert diff.max() < 1e-6, f"loader vs ESIOS fresh diverges: max diff {diff.max()}"
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not os.environ.get("ESIOS_API_TOKEN"), reason="ESIOS_API_TOKEN not set")
+def test_load_dam_panel_consistent_with_pull_indicator_in_utc():
+    """load_dam_panel(timezone='UTC') must agree byte-for-byte with pull_indicator."""
+    from mibel_forecasting.data.esios import pull_dam_es
+
+    direct = pull_dam_es(start="2024-06-01", end="2024-06-07")
+    panel = load_dam_panel(
+        start="2024-06-01", end="2024-06-07",
+        v8_exogenous=None,
+        include_price_pt=False,
+        include_price_fr=False,
+    )
+    assert str(panel.index.tz) == "UTC"
+    aligned = pd.concat([panel["price_es"].rename("panel"),
+                         direct.rename("direct")], axis=1).dropna()
+    assert len(aligned) == 7 * 24
+    pd.testing.assert_series_equal(
+        aligned["panel"], aligned["direct"], check_names=False
+    )

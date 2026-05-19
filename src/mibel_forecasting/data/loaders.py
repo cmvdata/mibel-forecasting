@@ -1,5 +1,13 @@
 """Panel loaders for the DAM (ESIOS-canonical) and CID (legacy parquet).
 
+**Internal timezone is UTC by default.** Every panel returned by the
+loaders carries a tz-aware DatetimeIndex in UTC unless the caller
+explicitly opts into another timezone (``timezone="Europe/Madrid"`` for
+reporting, ``timezone=None`` for a tz-naive UTC index). This matches the
+convention used by ENTSO-E, OMIE and ESIOS in their machine-readable
+endpoints, eliminates DST-related ambiguities, and makes ``start`` /
+``end`` filters consistent across loaders and the ESIOS cache.
+
 DAM
 ---
 :func:`load_dam_panel` returns the hourly Spanish day-ahead panel:
@@ -10,8 +18,11 @@ DAM
   same indicator as optional exogenous features.
 - Optional exogenous features (demand/wind/solar forecasts, NTC, gas, CO2)
   are merged from the ``mibel-congestion-monitor`` v8 parquet on request.
-  The buggy ``price_es`` / ``price_fr`` columns of that parquet are
-  **never** consumed here — see ``memory/project_v8_labels_bug.md``.
+  The upstream parquet stores tz-naive Europe/Madrid wall-clock
+  timestamps; this loader localizes them to Europe/Madrid first and then
+  converts to the requested output timezone. The buggy ``price_es`` /
+  ``price_fr`` columns of that parquet are **never** consumed here —
+  see ``reports/diagnostics/v8_vs_esios_2024_summary.md``.
 
 ESIOS responses are cached on disk by month, so subsequent calls do not
 hit the API. See :mod:`mibel_forecasting.data.esios`.
@@ -93,28 +104,40 @@ def _attach_datetime_index(
     *,
     timestamp_col: str,
     timezone: str | None,
+    source_tz: str = "Europe/Madrid",
 ) -> pd.DataFrame:
-    """Attach a DatetimeIndex and resolve DST transitions.
+    """Attach a DatetimeIndex, applying DST rules of ``source_tz``.
+
+    The upstream parquets (v8, CID features) store tz-naive timestamps
+    in Europe/Madrid wall-clock. We always localize to ``source_tz``
+    first so DST transitions are handled correctly:
 
     - Fall-back (e.g. last Sunday of October 03:00 → 02:00): when duplicate
       02:00 rows exist, the first occurrence is CEST and the second is CET.
     - Spring-forward (e.g. last Sunday of March 02:00 → 03:00): phantom
       02:00 rows are dropped (timestamp does not exist).
+
+    The index is then converted to the requested output ``timezone``
+    (or returned tz-naive UTC if ``timezone`` is ``None``).
     """
     df = df.copy()
     ts = pd.to_datetime(df[timestamp_col])
     df = df.drop(columns=[timestamp_col])
 
-    if timezone is not None:
-        is_dst = ts.duplicated(keep="last").to_numpy()
-        ts_local = ts.dt.tz_localize(timezone, ambiguous=is_dst, nonexistent="NaT")
-        valid = ts_local.notna().to_numpy()
-        df = df.loc[valid]
-        ts_local = ts_local[valid]
-        df.index = pd.DatetimeIndex(ts_local, name="datetime")
-    else:
-        df.index = pd.DatetimeIndex(ts, name="datetime")
+    is_dst = ts.duplicated(keep="last").to_numpy()
+    ts_local = ts.dt.tz_localize(source_tz, ambiguous=is_dst, nonexistent="NaT")
+    valid = ts_local.notna().to_numpy()
+    df = df.loc[valid]
+    ts_local = ts_local[valid]
 
+    if timezone is None:
+        # Strip tz info AFTER converting to UTC so the resulting naive
+        # series represents UTC wall-clock, not source_tz wall-clock.
+        ts_out = ts_local.dt.tz_convert("UTC").dt.tz_localize(None)
+    else:
+        ts_out = ts_local.dt.tz_convert(timezone)
+
+    df.index = pd.DatetimeIndex(ts_out, name="datetime")
     df = df[~df.index.duplicated(keep="first")].sort_index()
     return df
 
@@ -176,7 +199,7 @@ def load_dam_panel(
     include_price_fr: bool = True,
     v8_exogenous: Sequence[str] | None = DAM_V8_EXOGENOUS,
     v8_parquet_path: str | Path | None = None,
-    timezone: str | None = "Europe/Madrid",
+    timezone: str | None = "UTC",
     reindex_hourly: bool = True,
     drop_target_nan: bool = True,
     cache_dir: str | Path | None = None,
@@ -192,7 +215,11 @@ def load_dam_panel(
     Parameters
     ----------
     start, end
-        Inclusive bounds (date or timestamp).
+        Inclusive bounds. Date-only strings (e.g. ``"2024-06-01"``)
+        follow pandas partial-string-indexing semantics in the panel's
+        ``timezone`` — for ``timezone="UTC"`` they cover the whole UTC
+        day, for ``timezone="Europe/Madrid"`` they cover the whole
+        Spanish wall-clock day.
     target_col
         Name of the target column in the returned DataFrame. The data is
         always ESIOS 600 geo=3; this parameter only relabels the column.
@@ -204,7 +231,10 @@ def load_dam_panel(
     v8_parquet_path
         Override the v8 path (defaults to ``MIBEL_DAM_PARQUET`` env var).
     timezone
-        Output index timezone. ``None`` returns naïve UTC.
+        Output index timezone. **Default ``"UTC"``** — the convention used
+        by the underlying ESIOS / OMIE / ENTSO-E publishers. Pass
+        ``"Europe/Madrid"`` for figure/report rendering or ``None`` for
+        a tz-naive UTC index.
     reindex_hourly
         If ``True``, fill any gaps in the hourly grid with NaN.
     drop_target_nan
@@ -256,11 +286,15 @@ def load_cid_panel(
     end: str | pd.Timestamp | None = None,
     target_col: str = "mic_price",
     feature_cols: Sequence[str] | None = None,
-    timezone: str | None = "Europe/Madrid",
+    timezone: str | None = "UTC",
     reindex_hourly: bool = True,
     add_missing_flag: bool = True,
 ) -> pd.DataFrame:
     """Load the CID panel from ``features_2022_2024.parquet``.
+
+    The upstream parquet stores tz-naive Europe/Madrid wall-clock
+    timestamps; the loader localizes to Europe/Madrid first and then
+    converts to the requested output ``timezone`` (UTC by default).
 
     The target ``mic_price`` (ESIOS 1727) is unaffected by the v8 label
     bug. ``price_es`` and ``price_fr`` in the returned panel **do**
