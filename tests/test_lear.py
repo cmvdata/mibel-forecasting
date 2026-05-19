@@ -188,6 +188,37 @@ def test_lear_predict_handles_partial_hour_test_day():
     assert pred.isna().all(), "partial day cannot be predicted; should stay NaN cleanly"
 
 
+def test_lear_fit_robust_when_n_samples_close_to_n_features():
+    """LassoLarsIC's OLS-based noise-variance estimator requires comfortably
+    more samples than features. With ``n_samples <= n_features`` sklearn
+    raises ``"the number of samples is smaller than the number of features"``;
+    even with ``n_samples == n_features + 1`` the estimate is unreliable. LEAR
+    must pass a unit-variance prior whenever ``n_samples`` is not above
+    ``n_features + N_HOURS`` rows of safety margin.
+
+    Reproduces the failure of the full-year robustness backtest where the
+    rolling training window for LEAR demand+solar+wind (319 features)
+    shrank close to the n_features boundary on at least one rolling step
+    after partial-day dropping.
+    """
+    base = _synthetic_panel(days=335)
+    rng = np.random.default_rng(1)
+    solar = (
+        3000
+        + 2500 * np.maximum(0, np.sin(2 * np.pi * (base.index.hour - 6) / 24))
+        + rng.normal(0, 400, len(base))
+    )
+    df = base.assign(es_solar_fc=solar)
+    train = df.iloc[:-24]  # ~334 days minus 7 lag rows ~= 327 training samples
+
+    # demand+solar+wind has 96 + 3*72 + 7 = 319 features — the boundary case.
+    m = LEAR(
+        target_col="price_es",
+        exogenous_cols=("es_demand_fc", "es_solar_fc", "es_wind_fc"),
+    ).fit(train)
+    assert m.n_features == 319
+
+
 def test_lear_partial_day_skipped_uniformly_across_variants():
     """The partial-day filter must be uniform across LEAR configurations.
 

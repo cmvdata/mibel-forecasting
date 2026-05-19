@@ -284,12 +284,18 @@ class LEAR:
         Ys = self._scale_y(Y, fit=True)
 
         n_samples, n_feat = Xs.shape
-        # LassoLarsIC's AIC criterion needs an estimate of the noise variance,
-        # which it derives from OLS residuals only when n_samples > n_features.
-        # On short calibration windows we fall back to a unit-variance prior
-        # (justifiable because Y has been arcsinh-median scaled, so its scale
-        # is O(1) by construction).
-        noise_variance_kw = {} if n_samples > n_feat else {"noise_variance": 1.0}
+        # LassoLarsIC's AIC criterion needs an estimate of the noise variance.
+        # When the user does not pass one, sklearn fits an unregularised OLS
+        # and uses its residual variance. That OLS path needs comfortably more
+        # samples than features — sklearn itself raises "samples is smaller
+        # than features" when ``n_samples <= n_features``, and the estimate is
+        # noisy when n_samples sits just above n_features. We therefore fall
+        # back to a unit-variance prior unless n_samples exceeds n_features by
+        # at least ``N_HOURS`` rows of safety margin. The prior is defensible
+        # because Y has been arcsinh-median scaled (O(1) by construction).
+        noise_variance_kw = (
+            {} if n_samples > n_feat + N_HOURS else {"noise_variance": 1.0}
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ConvergenceWarning)
             for h in range(N_HOURS):
