@@ -71,3 +71,6 @@ desktop.ini
 scripts/_dump_code_bundle.py
 scripts/_build_nb03.py
 code_bundle.txt
+
+# Reference PDFs (papers etc.) kept locally for audit, not redistributed
+reports/*.pdf
