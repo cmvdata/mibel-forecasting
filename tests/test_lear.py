@@ -80,7 +80,7 @@ def test_pivot_hourly_drops_incomplete_days():
     df = _synthetic_panel(days=5)
     # Knock out one hour to simulate DST spring-forward
     df = df.drop(df.index[26])
-    price_w, _exog_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
+    price_w, _exog_w, _ti_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
     assert price_w.shape[1] == 24
     # The day with a missing hour should have been dropped
     assert len(price_w) == 4
@@ -88,7 +88,7 @@ def test_pivot_hourly_drops_incomplete_days():
 
 def test_feature_row_returns_none_when_lag_missing():
     df = _synthetic_panel(days=10)
-    price_w, exog_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
+    price_w, exog_w, _ti_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
     # Day D=4 needs D-7 which only exists if we have day -3 (we don't).
     day_4 = price_w.index[4]
     feat = _feature_row_for_day(day_4, price_w, exog_w)
@@ -97,7 +97,7 @@ def test_feature_row_returns_none_when_lag_missing():
 
 def test_feature_row_has_expected_length_when_lags_available():
     df = _synthetic_panel(days=20)
-    price_w, exog_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
+    price_w, exog_w, _ti_w = _pivot_hourly(df, "price_es", ("es_demand_fc", "es_wind_fc"))
     feat = _feature_row_for_day(price_w.index[10], price_w, exog_w)
     assert feat is not None
     assert feat.shape == (247,)
@@ -263,3 +263,79 @@ def test_lear_multiday_window_no_leakage_from_within_test():
     pred_baseline = m.predict(test_baseline)
     pred_poisoned = m.predict(test_poisoned)
     pd.testing.assert_series_equal(pred_baseline, pred_poisoned, check_names=False)
+
+
+# ---------------------------------------------------------------------------
+# Technical-indicator integration
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_panel_with_ti(days: int = 400, seed: int = 0) -> pd.DataFrame:
+    """Synthetic panel pre-joined with all eight Demir TI columns."""
+    from mibel_forecasting.features.technical_indicators import (
+        compute_technical_indicators,
+    )
+
+    base = _synthetic_panel(days=days, seed=seed)
+    ti = compute_technical_indicators(base)
+    return base.join(ti)
+
+
+def test_lear_with_ti_feature_count():
+    """``include_ti`` style call adds exactly ``len(ti_cols) * 24`` features."""
+    from mibel_forecasting.features.technical_indicators import TI_COLUMNS
+
+    m = LEAR(target_col="price_es", ti_cols=TI_COLUMNS)
+    assert m.n_features == 96 + 2 * 72 + 8 * 24 + 7  # = 439
+    m_ar = LEAR(target_col="price_es", exogenous_cols=(), ti_cols=TI_COLUMNS)
+    assert m_ar.n_features == 96 + 8 * 24 + 7  # = 295
+
+
+def test_lear_ti_round_trip_fit_predict():
+    """A LEAR with TI columns must fit, predict, and produce finite
+    predictions on a clean synthetic panel."""
+    from mibel_forecasting.features.technical_indicators import TI_COLUMNS
+
+    df = _synthetic_panel_with_ti(days=400)
+    train = df.iloc[:-24]
+    test = df.iloc[-24:].copy()
+    test["price_es"] = np.nan
+
+    m = LEAR(target_col="price_es", ti_cols=TI_COLUMNS).fit(train)
+    pred = m.predict(test)
+    assert pred.notna().all()
+
+
+def test_lear_ti_no_leakage_via_target_poisoning():
+    """Poisoning the realised target inside the test window must not
+    change LEAR predictions when TI features are enabled. This guards
+    against an unlikely-but-possible path where TI columns somehow
+    propagate the realised target."""
+    from mibel_forecasting.features.technical_indicators import TI_COLUMNS
+
+    df = _synthetic_panel_with_ti(days=400)
+    train = df.iloc[:-24]
+    test_nan = df.iloc[-24:].copy()
+    test_nan["price_es"] = np.nan
+    test_poisoned = df.iloc[-24:].copy()
+    test_poisoned["price_es"] = 9999.0
+
+    m = LEAR(target_col="price_es", ti_cols=TI_COLUMNS).fit(train)
+    pred_nan = m.predict(test_nan)
+    pred_poisoned = m.predict(test_poisoned)
+    pd.testing.assert_series_equal(pred_nan, pred_poisoned, check_names=False)
+
+
+def test_lear_ti_cols_must_be_present_in_train_df():
+    """Missing TI column is a programming bug — fail loud."""
+    df = _synthetic_panel(days=200)  # no TI columns
+    with pytest.raises(KeyError, match="ti_cols"):
+        LEAR(target_col="price_es", ti_cols=("ti_ema",)).fit(df)
+
+
+def test_lear_default_ti_cols_empty_preserves_backward_compat():
+    """The default ``ti_cols=()`` must reproduce the exact 247-feature
+    configuration so existing notebooks and tests are bit-compatible."""
+    m_default = LEAR(target_col="price_es")
+    m_explicit_empty = LEAR(target_col="price_es", ti_cols=())
+    assert m_default.n_features == m_explicit_empty.n_features == 247
