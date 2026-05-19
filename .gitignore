@@ -62,3 +62,7 @@ desktop.ini
 
 # Claude Code local settings (project-wide settings.json IS committed if used)
 .claude/settings.local.json
+
+# Local audit/dump tooling (not part of the product)
+scripts/_dump_code_bundle.py
+code_bundle.txt
