@@ -53,6 +53,9 @@ reports/diagnostics/*.csv
 # reload the table without re-running notebook 03 (~70 min compute).
 !reports/diagnostics/lear_robustness_2026_05.csv
 !reports/diagnostics/lear_robustness_dropped_days_2026_05.csv
+# Same for the technical-indicators ablation (notebook 04, ~3 h compute).
+!reports/diagnostics/technical_indicators_2026_05.csv
+!reports/diagnostics/technical_indicators_dropped_days_2026_05.csv
 
 # OS
 .DS_Store
@@ -70,6 +73,7 @@ desktop.ini
 # Local audit/dump tooling (not part of the product)
 scripts/_dump_code_bundle.py
 scripts/_build_nb03.py
+scripts/_build_nb04.py
 code_bundle.txt
 
 # Reference PDFs (papers etc.) kept locally for audit, not redistributed

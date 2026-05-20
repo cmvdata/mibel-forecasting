@@ -23,6 +23,10 @@ from mibel_forecasting.data.loaders import load_dam_panel
 from mibel_forecasting.evaluation.dm_test import diebold_mariano
 from mibel_forecasting.evaluation.metrics import mae, smape
 from mibel_forecasting.evaluation.recalibration import rolling_forecast
+from mibel_forecasting.features.technical_indicators import (
+    TI_COLUMNS,
+    compute_technical_indicators,
+)
 from mibel_forecasting.models.lear import LEAR
 from mibel_forecasting.models.naive import SeasonalNaive
 
@@ -31,6 +35,17 @@ MODEL_NAMES: tuple[str, ...] = (
     "LEAR ar-only",
     "LEAR demand+wind",
     "LEAR demand+solar+wind",
+)
+
+# TI-augmented variants for notebook 04. The strings here must match
+# exactly the keys used by ``_factory_for`` below.
+MODEL_NAMES_WITH_TI: tuple[str, ...] = (
+    "naive",
+    "LEAR ar-only",
+    "LEAR ar-only + TI",
+    "LEAR demand+wind",
+    "LEAR demand+wind + TI",
+    "LEAR demand+solar+wind + TI",
 )
 
 
@@ -42,14 +57,30 @@ def _factory_for(name: str, target_col: str = "price_es") -> Callable:
         return lambda: SeasonalNaive(target_col=target_col)
     if name == "LEAR ar-only":
         return lambda: LEAR(target_col=target_col, exogenous_cols=())
+    if name == "LEAR ar-only + TI":
+        return lambda: LEAR(
+            target_col=target_col, exogenous_cols=(), ti_cols=TI_COLUMNS
+        )
     if name == "LEAR demand+wind":
         return lambda: LEAR(
             target_col=target_col, exogenous_cols=("es_demand_fc", "es_wind_fc")
+        )
+    if name == "LEAR demand+wind + TI":
+        return lambda: LEAR(
+            target_col=target_col,
+            exogenous_cols=("es_demand_fc", "es_wind_fc"),
+            ti_cols=TI_COLUMNS,
         )
     if name == "LEAR demand+solar+wind":
         return lambda: LEAR(
             target_col=target_col,
             exogenous_cols=("es_demand_fc", "es_solar_fc", "es_wind_fc"),
+        )
+    if name == "LEAR demand+solar+wind + TI":
+        return lambda: LEAR(
+            target_col=target_col,
+            exogenous_cols=("es_demand_fc", "es_solar_fc", "es_wind_fc"),
+            ti_cols=TI_COLUMNS,
         )
     raise ValueError(f"unknown model name: {name!r}")
 
@@ -111,6 +142,18 @@ def _metric_rows(
     return rows
 
 
+def cap_blas_threads() -> None:
+    """``ProcessPoolExecutor`` initializer that caps BLAS thread pools at 1
+    per worker process. Prevents the oversubscription / deadlock that
+    stalled the first attempt at notebook 04 for >6 h on Windows.
+
+    Defined at module scope (not in the notebook cell) so workers can
+    import and call it during ``initializer=...``."""
+    from threadpoolctl import threadpool_limits
+
+    threadpool_limits(limits=1)
+
+
 def run_regime(spec: dict[str, Any]) -> dict[str, Any]:
     """Run the full naive + 3-LEAR-variant backtest on one regime.
 
@@ -135,6 +178,14 @@ def run_regime(spec: dict[str, Any]) -> dict[str, Any]:
         coverage rows).
     """
     df = load_dam_panel(start=spec["panel_start"], end=spec["panel_end"]).dropna()
+    if spec.get("with_ti", False):
+        # Join the eight TI columns onto the panel BEFORE the per-model
+        # backtest. Non-TI variants ignore them via ``ti_cols=()``; TI
+        # variants reference them by name. The TIs are leakage-safe by
+        # construction inside ``compute_technical_indicators`` (audit
+        # ``demir_2019_ti_parameter_audit_2026_05.md``).
+        ti_df = compute_technical_indicators(df)
+        df = df.join(ti_df)
 
     models = list(spec["models"])
     forecasts: dict[str, pd.DataFrame] = {}
