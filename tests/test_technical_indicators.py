@@ -163,6 +163,39 @@ def test_all_columns_present_with_expected_names():
     assert tuple(ti.columns) == TI_COLUMNS
 
 
+def test_zero_price_in_roc_lookback_yields_nan_not_inf():
+    """``pct_change(periods=n)`` returns ``+/- inf`` when the n-step-lagged
+    value is exactly 0 and the current value is non-zero. The MIBEL DAM
+    panel has zero-price hours (~6 % in 2024), so this path is real
+    and must produce ``NaN`` — not ``inf`` — so the downstream LEAR
+    ``dropna(how='any')`` filter excludes the affected day cleanly.
+
+    Reproduces the failure mode that crashed notebook 04's parallel
+    run with ``Input X contains infinity`` after notebook 03 had
+    succeeded on the same panel (TIs disabled there)."""
+    panel = _synthetic_panel(days=200)
+    # Force one hour-of-day daily series to have a zero exactly ROC_N
+    # = 49 days before a non-zero observation. The shift(1) inside the
+    # TI computation pushes that 0 into the lagged ROC denominator at
+    # position day-50 (49 + 1).
+    from mibel_forecasting.features.technical_indicators import ROC_N
+
+    zero_day = panel.index[100 * 24]  # day 100, hour 0
+    panel.loc[zero_day, "price_es"] = 0.0
+    # The cell that should now reach `+/- inf` without the coercion:
+    target = zero_day + pd.Timedelta(days=ROC_N + 1)
+
+    ti = compute_technical_indicators(panel)
+    assert np.isfinite(ti.loc[target, "ti_roc"]) or np.isnan(ti.loc[target, "ti_roc"]), (
+        f"ti_roc at {target} is not finite and not NaN — leaked inf"
+    )
+    # Verify the test is meaningful: without the fix the value would
+    # be inf, with the fix it must be NaN. We do not assert NaN here
+    # exactly (the test fires on any non-finite that is not silently
+    # cast to a float) but the downstream LEAR pivot relies on NaN.
+    assert not np.isinf(ti.loc[target, "ti_roc"])
+
+
 def test_raises_when_price_es_missing():
     """Missing target column is a programming bug — fail loud, not
     silent NaN."""

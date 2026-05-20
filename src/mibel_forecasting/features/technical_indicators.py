@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ def compute_technical_indicators(panel: pd.DataFrame) -> pd.DataFrame:
         coppock_input, lambda x: x.ewm(span=COPPOCK_SPAN, adjust=True).mean()
     )
 
-    return pd.DataFrame(
+    out = pd.DataFrame(
         {
             "ti_ema": ti_ema,
             "ti_bollinger_pct_b": ti_pct_b,
@@ -222,6 +223,15 @@ def compute_technical_indicators(panel: pd.DataFrame) -> pd.DataFrame:
         },
         index=panel.index,
     )
+    # ``pct_change(periods=n)`` returns ``+/- inf`` (not NaN) when the
+    # n-day-lagged hour-price is exactly 0 and the current price is
+    # non-zero. MIBEL DAM 2024 has ~6 % zero-price hours so this is a
+    # real path. Coerce ``inf`` to ``NaN`` so the downstream
+    # ``dropna(how='any')`` filter in ``LEAR._pivot_hourly`` excludes
+    # affected days uniformly; without this, Lasso receives
+    # ``Input X contains infinity`` and crashes the rolling-forecast
+    # loop on the first 0-price hour inside a ROC lookback window.
+    return out.replace([np.inf, -np.inf], np.nan)
 
 
 def _bollinger_pct_b(x: pd.Series) -> pd.Series:
