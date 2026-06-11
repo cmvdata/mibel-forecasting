@@ -1,0 +1,22 @@
+============================================================================
+FORECASTING PAPER INPUTS — LEAR on MIBEL (2022-2024)
+============================================================================
+
+[3] Solar saturation: near-zero-price hours by year (ESIOS 600, ES)
+   2022: mean 167.5 EUR/MWh  share<=1EUR  0.3%  share<=0  0.0%  (8760 h)
+   2023: mean  87.1 EUR/MWh  share<=1EUR  2.0%  share<=0  1.2%  (8760 h)
+   2024: mean  63.0 EUR/MWh  share<=1EUR 12.4%  share<=0  8.9%  (8784 h)
+
+[1] LEAR (demand+wind) vs seasonal naive, by regime
+           regime  MAE (EUR/MWh)  sMAPE (%)  rMAE vs naive  DM p-value vs naive
+2022 (H2, crisis)        18.2632    16.0957         0.5663                  0.0
+ 2023 (full year)        12.8994    24.5560         0.4518                  0.0
+ 2024 (full year)        14.0107    51.0253         0.5107                  0.0
+ 2023-2024 pooled        13.4568    37.8303         0.4807                  0.0
+
+[2] Technical-indicator transfer: rMAE without vs with TI (negative transfer)
+           regime  rMAE_base  rMAE_TI  delta_pts
+2022 (H2, crisis)      0.566    0.615        4.8
+ 2023 (full year)      0.452    0.538        8.6
+ 2024 (full year)      0.511    0.605        9.5
+ 2023-2024 pooled      0.481    0.565        8.4

@@ -1,0 +1,5 @@
+regime,rMAE_base,rMAE_TI,delta_pts
+"2022 (H2, crisis)",0.566,0.615,4.8
+2023 (full year),0.452,0.538,8.6
+2024 (full year),0.511,0.605,9.5
+2023-2024 pooled,0.481,0.565,8.4

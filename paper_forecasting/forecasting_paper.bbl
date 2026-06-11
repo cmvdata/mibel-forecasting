@@ -1,0 +1,27 @@
+\begin{thebibliography}{}
+
+\bibitem[Demir et~al., 2020]{demir2020}
+Demir, S., Mincev, K., Kok, K., and Paterakis, N.~G. (2020).
+\newblock Introducing technical indicators to electricity price forecasting: A
+  feature engineering study for linear, ensemble, and deep machine learning
+  models.
+\newblock {\em Applied Sciences}, 10(1):255.
+\newblock Often cited as Demir et al. 2019 (preprint year).
+
+\bibitem[Diebold and Mariano, 1995]{dieboldmariano1995}
+Diebold, F.~X. and Mariano, R.~S. (1995).
+\newblock Comparing predictive accuracy.
+\newblock {\em Journal of Business \& Economic Statistics}, 13(3):253--263.
+
+\bibitem[Hyndman and Koehler, 2006]{hyndmankoehler2006}
+Hyndman, R.~J. and Koehler, A.~B. (2006).
+\newblock Another look at measures of forecast accuracy.
+\newblock {\em International Journal of Forecasting}, 22(4):679--688.
+
+\bibitem[Lago et~al., 2021]{lago2021}
+Lago, J., Marcjasz, G., De~Schutter, B., and Weron, R. (2021).
+\newblock Forecasting day-ahead electricity prices: A review of
+  state-of-the-art algorithms, best practices and an open-access benchmark.
+\newblock {\em Applied Energy}, 293:116983.
+
+\end{thebibliography}
